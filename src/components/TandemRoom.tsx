@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Mic,
   MicOff,
@@ -13,6 +13,7 @@ import {
   ChevronUp,
   MessageSquare,
   Lightbulb,
+  Radio,
 } from 'lucide-react';
 import { Partner, Topic, Message, SessionPhase, SupportedLanguage } from '../types';
 import { SUPPORTED_LANGUAGES, getLocalizedPrompts } from '../data/languages';
@@ -47,6 +48,8 @@ export const TandemRoom: React.FC<TandemRoomProps> = ({
   const [isMicListening, setIsMicListening] = useState<boolean>(false);
   const [isPartnerSpeaking, setIsPartnerSpeaking] = useState<boolean>(false);
   const [isPartnerTyping, setIsPartnerTyping] = useState<boolean>(false);
+  const [liveInterimSpeech, setLiveInterimSpeech] = useState<string>('');
+  const [handsFreeMode, setHandsFreeMode] = useState<boolean>(true); // Hands-free continuous call by default
   const [showHelperModal, setShowHelperModal] = useState<boolean>(false);
   const [helperQuery, setHelperQuery] = useState<string>('');
   const [helperResult, setHelperResult] = useState<{ translated: string; phonetic: string; tip: string } | null>(null);
@@ -57,33 +60,237 @@ export const TandemRoom: React.FC<TandemRoomProps> = ({
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const recognitionRef = useRef<any>(null);
+  const isMicActiveRef = useRef<boolean>(false);
+  const isPartnerSpeakingRef = useRef<boolean>(false);
+  const handsFreeRef = useRef<boolean>(true);
+  const silenceTimerRef = useRef<any>(null);
+  const isEndingCallRef = useRef<boolean>(false);
 
-  // Initialize Speech Recognition for active language
+  // Keep handsFreeRef in sync
+  useEffect(() => {
+    handsFreeRef.current = handsFreeMode;
+  }, [handsFreeMode]);
+
+  // Keep partner speaking ref in sync
+  useEffect(() => {
+    isPartnerSpeakingRef.current = isPartnerSpeaking;
+  }, [isPartnerSpeaking]);
+
+  // Safe starter and stopper for speech recognition
+  const startListening = useCallback(() => {
+    if (
+      recognitionRef.current &&
+      !isMicActiveRef.current &&
+      !isPartnerSpeakingRef.current &&
+      !isEndingCallRef.current
+    ) {
+      try {
+        recognitionRef.current.lang =
+          phase === 'phase1_target' ? targetLangInfo.speechCode : 'en-US';
+        recognitionRef.current.start();
+        isMicActiveRef.current = true;
+        setIsMicListening(true);
+      } catch (err) {
+        // Recognition might already be running
+      }
+    }
+  }, [phase, targetLangInfo.speechCode]);
+
+  const stopListening = useCallback(() => {
+    if (recognitionRef.current && isMicActiveRef.current) {
+      try {
+        recognitionRef.current.stop();
+        isMicActiveRef.current = false;
+        setIsMicListening(false);
+      } catch (err) {
+        // Recognition already stopped
+      }
+    }
+  }, []);
+
+  // Central handler to send user message and trigger AI voice response
+  const handleSendMessage = useCallback(
+    async (textToSend?: string) => {
+      const text = (textToSend || inputText).trim();
+      if (!text) return;
+
+      // Stop listening while AI prepares and speaks response
+      stopListening();
+      if (silenceTimerRef.current) {
+        clearTimeout(silenceTimerRef.current);
+        silenceTimerRef.current = null;
+      }
+      setLiveInterimSpeech('');
+      setInputText('');
+
+      sounds.playTurnSuccess();
+      const userWords = text.split(/\s+/).length;
+      setWordsSpokenCount((prev) => prev + userWords);
+
+      const userMessageObj: Message = {
+        id: `user-${Date.now()}`,
+        speaker: 'user',
+        speakerName: 'You',
+        text,
+        timestamp: Date.now(),
+        language: phase === 'phase1_target' ? partner.nativeLangCode : 'en',
+      };
+
+      setMessages((prev) => [...prev, userMessageObj]);
+      setIsPartnerTyping(true);
+
+      try {
+        const response = await fetch('/api/tandem/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            partnerId: partner.id,
+            currentLanguage: phase === 'phase1_target' ? partner.nativeLangCode : 'en',
+            sessionPhase: phase,
+            topicTitle: topic.title,
+            userMessage: text,
+            messageHistory: messages.slice(-5).map((m) => ({
+              speaker: m.speaker === 'user' ? 'User' : partner.name,
+              text: m.text,
+            })),
+          }),
+        });
+
+        const data = await response.json();
+        setIsPartnerTyping(false);
+
+        const partnerMessageObj: Message = {
+          id: `partner-${Date.now()}`,
+          speaker: 'partner',
+          speakerName: partner.name,
+          text: data.replyText,
+          translation: data.translation,
+          correction: data.correction,
+          reaction: data.reaction,
+          timestamp: Date.now(),
+          language: phase === 'phase1_target' ? partner.nativeLangCode : 'en',
+          audioData: data.audioData,
+        };
+
+        setMessages((prev) => [...prev, partnerMessageObj]);
+
+        // When partner starts speaking
+        const onSpeechStart = () => {
+          setIsPartnerSpeaking(true);
+          isPartnerSpeakingRef.current = true;
+          stopListening();
+        };
+
+        // When partner finishes speaking, auto-resume listening if hands-free is enabled
+        const onSpeechEnd = () => {
+          setIsPartnerSpeaking(false);
+          isPartnerSpeakingRef.current = false;
+          if (handsFreeRef.current && !isEndingCallRef.current) {
+            setTimeout(() => {
+              startListening();
+            }, 300);
+          }
+        };
+
+        // Speak partner response using Gemini AI Voice (or Web Speech API fallback)
+        if (soundEnabled) {
+          if (data.audioData) {
+            playAiVoiceAudio(data.audioData, onSpeechStart, onSpeechEnd);
+          } else {
+            speakText(
+              data.replyText,
+              phase === 'phase1_target' ? partner.nativeLangCode : 'en',
+              onSpeechStart,
+              onSpeechEnd
+            );
+          }
+        } else {
+          // If sound is muted, re-arm listening after slight delay
+          onSpeechEnd();
+        }
+      } catch (err) {
+        setIsPartnerTyping(false);
+        setIsPartnerSpeaking(false);
+        isPartnerSpeakingRef.current = false;
+        console.error('Failed to get partner response:', err);
+      }
+    },
+    [inputText, messages, partner, phase, soundEnabled, startListening, stopListening, topic.title]
+  );
+
+  // Store handleSendMessage in a ref so recognition events always access the freshest callback
+  const handleSendMessageRef = useRef(handleSendMessage);
+  useEffect(() => {
+    handleSendMessageRef.current = handleSendMessage;
+  }, [handleSendMessage]);
+
+  // Initialize Speech Recognition
   useEffect(() => {
     if (typeof window !== 'undefined') {
       const SpeechRecognition =
         (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+
       if (SpeechRecognition) {
         const recognition = new SpeechRecognition();
-        recognition.continuous = false;
-        recognition.interimResults = false;
+        recognition.continuous = true;
+        recognition.interimResults = true;
         recognition.lang = phase === 'phase1_target' ? targetLangInfo.speechCode : 'en-US';
 
         recognition.onresult = (event: any) => {
-          const transcript = event.results[0][0].transcript;
-          if (transcript) {
-            setInputText(transcript);
-            handleSendMessage(transcript);
+          let interimTranscript = '';
+          let finalTranscript = '';
+
+          for (let i = event.resultIndex; i < event.results.length; ++i) {
+            const transcript = event.results[i][0].transcript;
+            if (event.results[i].isFinal) {
+              finalTranscript += transcript;
+            } else {
+              interimTranscript += transcript;
+            }
           }
-          setIsMicListening(false);
+
+          if (interimTranscript) {
+            setLiveInterimSpeech(interimTranscript);
+          }
+
+          // If a final segment was recognized, send it immediately
+          if (finalTranscript.trim()) {
+            setLiveInterimSpeech('');
+            if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+            handleSendMessageRef.current(finalTranscript.trim());
+          } else if (interimTranscript.trim()) {
+            // Silence debounce fallback (1.2 seconds of silence sends the speech)
+            if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+            silenceTimerRef.current = setTimeout(() => {
+              if (interimTranscript.trim() && !isPartnerSpeakingRef.current) {
+                setLiveInterimSpeech('');
+                handleSendMessageRef.current(interimTranscript.trim());
+              }
+            }, 1200);
+          }
         };
 
-        recognition.onerror = () => {
-          setIsMicListening(false);
+        recognition.onerror = (event: any) => {
+          // 'no-speech' is expected during silent intervals
+          if (event.error !== 'no-speech') {
+            isMicActiveRef.current = false;
+            setIsMicListening(false);
+          }
         };
 
         recognition.onend = () => {
+          isMicActiveRef.current = false;
           setIsMicListening(false);
+          // If hands-free mode is on and partner isn't talking, auto-restart
+          if (
+            handsFreeRef.current &&
+            !isPartnerSpeakingRef.current &&
+            !isEndingCallRef.current
+          ) {
+            setTimeout(() => {
+              startListening();
+            }, 300);
+          }
         };
 
         recognitionRef.current = recognition;
@@ -92,8 +299,13 @@ export const TandemRoom: React.FC<TandemRoomProps> = ({
 
     return () => {
       stopSpeaking();
+      if (recognitionRef.current) {
+        try {
+          recognitionRef.current.stop();
+        } catch {}
+      }
     };
-  }, [phase, targetLangInfo.speechCode]);
+  }, [phase, startListening, targetLangInfo.speechCode]);
 
   // Initial partner greeting in their native language
   useEffect(() => {
@@ -128,9 +340,25 @@ export const TandemRoom: React.FC<TandemRoomProps> = ({
 
     setMessages([initialMessage]);
 
+    const onGreetingStart = () => {
+      setIsPartnerSpeaking(true);
+      isPartnerSpeakingRef.current = true;
+      stopListening();
+    };
+
+    const onGreetingEnd = () => {
+      setIsPartnerSpeaking(false);
+      isPartnerSpeakingRef.current = false;
+      // When greeting finishes, start listening for user's turn
+      if (handsFreeRef.current && !isEndingCallRef.current) {
+        setTimeout(() => {
+          startListening();
+        }, 400);
+      }
+    };
+
     if (soundEnabled) {
       setTimeout(() => {
-        // Fetch real Gemini AI Voice for the greeting
         fetch('/api/tandem/tts', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -143,33 +371,25 @@ export const TandemRoom: React.FC<TandemRoomProps> = ({
           .then((res) => res.json())
           .then((data) => {
             if (data.audioData) {
-              setIsPartnerSpeaking(true);
-              playAiVoiceAudio(
-                data.audioData,
-                () => setIsPartnerSpeaking(true),
-                () => setIsPartnerSpeaking(false)
-              );
-              // Save audioData onto the initial message
+              playAiVoiceAudio(data.audioData, onGreetingStart, onGreetingEnd);
               setMessages((prev) =>
                 prev.map((m) => (m.id === 'msg-0' ? { ...m, audioData: data.audioData } : m))
               );
             } else {
-              setIsPartnerSpeaking(true);
               speakText(
                 initialGreeting,
                 phase === 'phase1_target' ? partner.nativeLangCode : 'en',
-                () => setIsPartnerSpeaking(true),
-                () => setIsPartnerSpeaking(false)
+                onGreetingStart,
+                onGreetingEnd
               );
             }
           })
           .catch(() => {
-            setIsPartnerSpeaking(true);
             speakText(
               initialGreeting,
               phase === 'phase1_target' ? partner.nativeLangCode : 'en',
-              () => setIsPartnerSpeaking(true),
-              () => setIsPartnerSpeaking(false)
+              onGreetingStart,
+              onGreetingEnd
             );
           });
       }, 500);
@@ -201,7 +421,7 @@ export const TandemRoom: React.FC<TandemRoomProps> = ({
   // Scroll transcript to bottom
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, isPartnerTyping]);
+  }, [messages, isPartnerTyping, liveInterimSpeech]);
 
   const triggerHalfwaySwitch = () => {
     sounds.playHalfwaySwitch();
@@ -223,6 +443,9 @@ export const TandemRoom: React.FC<TandemRoomProps> = ({
   };
 
   const handleTimeExpire = () => {
+    isEndingCallRef.current = true;
+    stopListening();
+    stopSpeaking();
     sounds.playCompletionFanfare();
     const elapsedMinutes = Math.round((totalDuration - secondsRemaining) / 60) || 1;
     onEndCall({
@@ -234,101 +457,11 @@ export const TandemRoom: React.FC<TandemRoomProps> = ({
   const toggleMic = () => {
     sounds.playClick();
     if (isMicListening) {
-      recognitionRef.current?.stop();
-      setIsMicListening(false);
+      stopListening();
+      setHandsFreeMode(false);
     } else {
-      try {
-        if (recognitionRef.current) {
-          recognitionRef.current.lang =
-            phase === 'phase1_target' ? targetLangInfo.speechCode : 'en-US';
-          recognitionRef.current.start();
-          setIsMicListening(true);
-        } else {
-          alert('Voice input simulated: you can also type your message in the chat bar below!');
-        }
-      } catch (err) {
-        setIsMicListening(false);
-      }
-    }
-  };
-
-  const handleSendMessage = async (textToSend?: string) => {
-    const text = (textToSend || inputText).trim();
-    if (!text) return;
-
-    sounds.playTurnSuccess();
-    setInputText('');
-    const userWords = text.split(/\s+/).length;
-    setWordsSpokenCount((prev) => prev + userWords);
-
-    const userMessageObj: Message = {
-      id: `user-${Date.now()}`,
-      speaker: 'user',
-      speakerName: 'You',
-      text,
-      timestamp: Date.now(),
-      language: phase === 'phase1_target' ? partner.nativeLangCode : 'en',
-    };
-
-    setMessages((prev) => [...prev, userMessageObj]);
-    setIsPartnerTyping(true);
-
-    try {
-      const response = await fetch('/api/tandem/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          partnerId: partner.id,
-          currentLanguage: phase === 'phase1_target' ? partner.nativeLangCode : 'en',
-          sessionPhase: phase,
-          topicTitle: topic.title,
-          userMessage: text,
-          messageHistory: messages.slice(-5).map((m) => ({
-            speaker: m.speaker === 'user' ? 'User' : partner.name,
-            text: m.text,
-          })),
-        }),
-      });
-
-      const data = await response.json();
-      setIsPartnerTyping(false);
-
-      const partnerMessageObj: Message = {
-        id: `partner-${Date.now()}`,
-        speaker: 'partner',
-        speakerName: partner.name,
-        text: data.replyText,
-        translation: data.translation,
-        correction: data.correction,
-        reaction: data.reaction,
-        timestamp: Date.now(),
-        language: phase === 'phase1_target' ? partner.nativeLangCode : 'en',
-        audioData: data.audioData,
-      };
-
-      setMessages((prev) => [...prev, partnerMessageObj]);
-
-      // Speak partner response using Gemini AI Voice (or Web Speech API fallback)
-      if (soundEnabled) {
-        setIsPartnerSpeaking(true);
-        if (data.audioData) {
-          playAiVoiceAudio(
-            data.audioData,
-            () => setIsPartnerSpeaking(true),
-            () => setIsPartnerSpeaking(false)
-          );
-        } else {
-          speakText(
-            data.replyText,
-            phase === 'phase1_target' ? partner.nativeLangCode : 'en',
-            () => setIsPartnerSpeaking(true),
-            () => setIsPartnerSpeaking(false)
-          );
-        }
-      }
-    } catch (err) {
-      setIsPartnerTyping(false);
-      console.error('Failed to get partner response:', err);
+      setHandsFreeMode(true);
+      startListening();
     }
   };
 
@@ -363,7 +496,6 @@ export const TandemRoom: React.FC<TandemRoomProps> = ({
     return `${mins}:${remainder < 10 ? '0' : ''}${remainder}`;
   };
 
-  // Localized prompts for this topic and language
   const localizedData = getLocalizedPrompts(topic.id, partner.nativeLangCode);
 
   return (
@@ -399,8 +531,32 @@ export const TandemRoom: React.FC<TandemRoomProps> = ({
             </div>
           </div>
 
-          {/* Countdown Clock */}
-          <div className="flex items-center gap-4">
+          {/* Countdown Clock & Controls */}
+          <div className="flex items-center gap-3">
+            {/* Hands-Free Mode Toggle */}
+            <button
+              onClick={() => {
+                sounds.playClick();
+                const nextMode = !handsFreeMode;
+                setHandsFreeMode(nextMode);
+                if (nextMode) {
+                  startListening();
+                } else {
+                  stopListening();
+                }
+              }}
+              className={`px-3 py-1.5 rounded-xl border text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                handsFreeMode
+                  ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
+                  : 'bg-slate-50 text-slate-500 border-slate-200'
+              }`}
+              title="When enabled, your microphone automatically listens when it's your turn to speak"
+            >
+              <Radio className={`w-3.5 h-3.5 ${handsFreeMode ? 'text-emerald-500 animate-pulse' : 'text-slate-400'}`} />
+              <span className="hidden sm:inline">Hands-Free Call:</span>
+              <span className="font-black">{handsFreeMode ? 'ON' : 'OFF'}</span>
+            </button>
+
             <div className="flex items-center gap-2 bg-slate-100 px-4 py-2 rounded-2xl border border-slate-200">
               <span className="text-sm font-bold text-slate-500">Remaining:</span>
               <span className="text-xl font-black text-slate-900 tabular-nums">
@@ -542,56 +698,76 @@ export const TandemRoom: React.FC<TandemRoomProps> = ({
 
             <div className="text-center mt-3">
               <p className="text-xs text-slate-500 font-medium">
-                {phase === 'phase1_target'
-                  ? `Teaching mode: Listening to your ${targetLangInfo.name} with warm support`
-                  : `Student mode: Eagerly practicing English with you!`}
+                {isPartnerSpeaking
+                  ? `Speaking to you in ${phase === 'phase1_target' ? targetLangInfo.name : 'English'} with AI Voice`
+                  : isPartnerTyping
+                  ? `${partner.name.split(' ')[0]} is thinking and preparing to speak...`
+                  : isMicListening
+                  ? `Listening to your voice... speak now!`
+                  : `Waiting for your turn...`}
               </p>
             </div>
           </div>
 
           {/* User Video / Mic Status Tile */}
-          <div className="duo-card p-4 bg-white flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div
-                className={`w-12 h-12 rounded-2xl flex items-center justify-center font-black text-white text-base ${
-                  isMicListening ? 'bg-rose-500 animate-pulse' : 'bg-emerald-500'
-                }`}
-              >
-                {isMicListening ? <Mic className="w-6 h-6" /> : 'YOU'}
-              </div>
-              <div>
-                <div className="flex items-center gap-2">
-                  <h4 className="font-extrabold text-sm text-slate-900">Your Microphone</h4>
-                  <span
-                    className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                      isMicListening
-                        ? 'bg-rose-100 text-rose-700'
-                        : 'bg-slate-100 text-slate-600'
-                    }`}
-                  >
-                    {isMicListening ? 'Listening Live' : 'Push to Speak'}
-                  </span>
+          <div className="duo-card p-4 bg-white space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div
+                  className={`w-12 h-12 rounded-2xl flex items-center justify-center font-black text-white text-base transition-all ${
+                    isMicListening ? 'bg-rose-500 animate-pulse shadow-md scale-105' : 'bg-emerald-500'
+                  }`}
+                >
+                  {isMicListening ? <Mic className="w-6 h-6 animate-bounce" /> : 'YOU'}
                 </div>
-                <p className="text-xs text-slate-500 font-medium">
-                  Words spoken this session: <span className="font-bold text-slate-800">{wordsSpokenCount}</span>
-                </p>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h4 className="font-extrabold text-sm text-slate-900">Your Voice</h4>
+                    <span
+                      className={`text-[10px] font-bold px-2 py-0.5 rounded-full flex items-center gap-1 ${
+                        isMicListening
+                          ? 'bg-rose-100 text-rose-700 animate-pulse'
+                          : isPartnerSpeaking
+                          ? 'bg-slate-100 text-slate-500'
+                          : 'bg-emerald-100 text-emerald-800'
+                      }`}
+                    >
+                      {isMicListening
+                        ? '● Live Mic Listening'
+                        : isPartnerSpeaking
+                        ? 'Listening to Partner'
+                        : 'Ready to Speak'}
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-500 font-medium">
+                    Language: <span className="font-bold text-slate-800">{phase === 'phase1_target' ? targetLangInfo.name : 'English'}</span> · Spoken: <span className="font-bold text-slate-800">{wordsSpokenCount} words</span>
+                  </p>
+                </div>
               </div>
+
+              <button
+                onClick={toggleMic}
+                className={`p-3 rounded-2xl transition-all font-bold cursor-pointer shadow-xs ${
+                  isMicListening
+                    ? 'bg-rose-500 text-white hover:bg-rose-600 ring-2 ring-rose-200'
+                    : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                }`}
+                title={isMicListening ? 'Click to mute microphone' : 'Click to turn on microphone'}
+              >
+                {isMicListening ? <Mic className="w-5 h-5" /> : <MicOff className="w-5 h-5 text-slate-400" />}
+              </button>
             </div>
 
-            <button
-              onClick={toggleMic}
-              className={`p-3 rounded-2xl transition-all font-bold cursor-pointer shadow-xs ${
-                isMicListening
-                  ? 'bg-rose-500 text-white hover:bg-rose-600 ring-2 ring-rose-200'
-                  : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
-              }`}
-              title={isMicListening ? 'Stop listening' : 'Start microphone'}
-            >
-              {isMicListening ? <Mic className="w-5 h-5" /> : <MicOff className="w-5 h-5 text-slate-400" />}
-            </button>
+            {/* Live Interim Speech Bubble (Shows in real-time as user speaks) */}
+            {liveInterimSpeech && (
+              <div className="p-2.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-900 text-xs font-semibold flex items-center gap-2 animate-pulse">
+                <span className="w-2 h-2 rounded-full bg-rose-500 animate-ping"></span>
+                <span>Recognizing: "{liveInterimSpeech}..."</span>
+              </div>
+            )}
           </div>
 
-          {/* Guided Topic & Vocab Cue Card */}
+          {/* Guided Topic & Vocab Cue Card with 1-Click Spoken Turn Triggers */}
           <div className="duo-card p-4 bg-amber-50/60 border-amber-200 space-y-3">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2 text-xs font-black text-amber-800 uppercase tracking-wider">
@@ -610,7 +786,7 @@ export const TandemRoom: React.FC<TandemRoomProps> = ({
               <div className="space-y-3 text-xs">
                 <div>
                   <span className="font-bold text-amber-900 block mb-1">
-                    Try asking or sharing:
+                    Tap to speak this phrase to {partner.name.split(' ')[0]}:
                   </span>
                   <div className="space-y-1.5">
                     {localizedData.prompts.map((prompt, idx) => (
@@ -618,12 +794,19 @@ export const TandemRoom: React.FC<TandemRoomProps> = ({
                         key={idx}
                         onClick={() => {
                           sounds.playClick();
-                          setInputText(prompt);
+                          // Speak this prompt to the AI partner and get spoken reply!
+                          handleSendMessage(prompt);
                         }}
-                        className="text-left w-full p-2 rounded-xl bg-white border border-amber-200 text-slate-700 hover:border-amber-400 font-medium transition-colors flex items-center justify-between group cursor-pointer"
+                        className="text-left w-full p-2.5 rounded-xl bg-white border border-amber-200 text-slate-700 hover:border-[#58cc02] hover:bg-emerald-50/40 font-medium transition-colors flex items-center justify-between group cursor-pointer shadow-2xs"
+                        title="Click to speak this sentence to your partner"
                       >
-                        <span className="italic font-semibold">"{prompt}"</span>
-                        <ArrowRight className="w-3.5 h-3.5 text-amber-500 opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
+                        <div className="flex items-center gap-2">
+                          <Mic className="w-3.5 h-3.5 text-[#58cc02] shrink-0" />
+                          <span className="font-bold text-slate-800">"{prompt}"</span>
+                        </div>
+                        <span className="text-[10px] font-black text-[#58cc02] bg-emerald-50 px-2 py-0.5 rounded-md uppercase tracking-wider shrink-0 group-hover:bg-[#58cc02] group-hover:text-white transition-colors">
+                          Speak Now ➔
+                        </span>
                       </button>
                     ))}
                   </div>
@@ -722,12 +905,12 @@ export const TandemRoom: React.FC<TandemRoomProps> = ({
                     <button
                       onClick={() => {
                         sounds.playClick();
-                        setInputText(helperResult.translated);
+                        handleSendMessage(helperResult.translated);
                         setShowHelperModal(false);
                       }}
-                      className="text-[11px] font-bold text-purple-600 hover:underline flex items-center gap-1 cursor-pointer"
+                      className="text-[11px] font-black text-purple-600 hover:underline flex items-center gap-1 cursor-pointer bg-purple-50 px-2 py-1 rounded-lg"
                     >
-                      <Check className="w-3 h-3" /> Use this
+                      <Check className="w-3 h-3" /> Speak this now ➔
                     </button>
                   </div>
                   <div className="text-slate-500 italic text-[11px]">
@@ -811,7 +994,6 @@ export const TandemRoom: React.FC<TandemRoomProps> = ({
                             () => setIsPartnerSpeaking(false)
                           );
                         } else {
-                          // Fetch Gemini TTS on demand
                           fetch('/api/tandem/tts', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
@@ -847,12 +1029,22 @@ export const TandemRoom: React.FC<TandemRoomProps> = ({
               );
             })}
 
+            {/* Live Interim speech being recognized right now */}
+            {liveInterimSpeech && (
+              <div className="flex flex-col items-end animate-pulse">
+                <span className="text-[10px] font-bold text-rose-500 mr-2">Speaking...</span>
+                <div className="max-w-[85%] rounded-2xl rounded-br-none px-4 py-2.5 bg-emerald-100 text-emerald-900 border border-emerald-300 text-xs sm:text-sm font-semibold italic">
+                  "{liveInterimSpeech}..."
+                </div>
+              </div>
+            )}
+
             {isPartnerTyping && (
               <div className="flex items-center gap-2 text-xs text-slate-400 p-2 bg-slate-50 rounded-xl w-fit">
                 <span className="w-2 h-2 rounded-full bg-slate-400 animate-bounce"></span>
                 <span className="w-2 h-2 rounded-full bg-slate-400 animate-bounce delay-100"></span>
                 <span className="w-2 h-2 rounded-full bg-slate-400 animate-bounce delay-200"></span>
-                <span className="font-bold">{partner.name} is speaking...</span>
+                <span className="font-bold">{partner.name} is preparing to speak...</span>
               </div>
             )}
 
@@ -875,11 +1067,13 @@ export const TandemRoom: React.FC<TandemRoomProps> = ({
                 key={idx}
                 onClick={() => {
                   sounds.playClick();
-                  setInputText(chip);
+                  handleSendMessage(chip);
                 }}
-                className="whitespace-nowrap px-2.5 py-1 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold transition-colors cursor-pointer shrink-0"
+                className="whitespace-nowrap px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-[#58cc02] hover:text-white text-slate-700 text-xs font-bold transition-all cursor-pointer shrink-0 flex items-center gap-1.5 shadow-2xs"
+                title={`Click to speak "${chip}" to partner`}
               >
-                {chip}
+                <Mic className="w-3 h-3 text-[#58cc02] group-hover:text-white" />
+                <span>{chip}</span>
               </button>
             ))}
           </div>
@@ -897,10 +1091,10 @@ export const TandemRoom: React.FC<TandemRoomProps> = ({
               onClick={toggleMic}
               className={`p-3 rounded-2xl transition-all font-bold cursor-pointer shrink-0 ${
                 isMicListening
-                  ? 'bg-rose-500 text-white animate-pulse'
+                  ? 'bg-rose-500 text-white animate-pulse shadow-md ring-2 ring-rose-200'
                   : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
               }`}
-              title="Voice recording"
+              title={isMicListening ? 'Click to pause mic' : 'Click to turn on mic'}
             >
               <Mic className="w-5 h-5" />
             </button>
@@ -908,9 +1102,9 @@ export const TandemRoom: React.FC<TandemRoomProps> = ({
             <input
               type="text"
               placeholder={
-                phase === 'phase1_target'
-                  ? `Type in ${targetLangInfo.name} or speak...`
-                  : 'Type in English or speak...'
+                isMicListening
+                  ? `🎙️ Listening... speak now in ${phase === 'phase1_target' ? targetLangInfo.name : 'English'}!`
+                  : `Type or click mic to speak in ${phase === 'phase1_target' ? targetLangInfo.name : 'English'}...`
               }
               value={inputText}
               onChange={(e) => setInputText(e.target.value)}
