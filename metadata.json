@@ -1,0 +1,7 @@
+{
+  "name": "Duolingo Tandem",
+  "description": "Real-time conversational language exchange pairing complementary learners for timed split speaking sessions with live topic prompts, speech audio, and daily streaks.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
