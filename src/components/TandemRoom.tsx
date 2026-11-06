@@ -16,7 +16,7 @@ import {
 } from 'lucide-react';
 import { Partner, Topic, Message, SessionPhase, SupportedLanguage } from '../types';
 import { SUPPORTED_LANGUAGES, getLocalizedPrompts } from '../data/languages';
-import { sounds, speakText, stopSpeaking } from '../utils/sound';
+import { sounds, speakText, playAiVoiceAudio, stopSpeaking } from '../utils/sound';
 
 interface TandemRoomProps {
   partner: Partner;
@@ -130,13 +130,48 @@ export const TandemRoom: React.FC<TandemRoomProps> = ({
 
     if (soundEnabled) {
       setTimeout(() => {
-        setIsPartnerSpeaking(true);
-        speakText(
-          initialGreeting,
-          phase === 'phase1_target' ? partner.nativeLangCode : 'en',
-          () => setIsPartnerSpeaking(true),
-          () => setIsPartnerSpeaking(false)
-        );
+        // Fetch real Gemini AI Voice for the greeting
+        fetch('/api/tandem/tts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            text: initialGreeting,
+            voiceName: partner.voiceName || 'Kore',
+            partnerLocation: partner.location,
+          }),
+        })
+          .then((res) => res.json())
+          .then((data) => {
+            if (data.audioData) {
+              setIsPartnerSpeaking(true);
+              playAiVoiceAudio(
+                data.audioData,
+                () => setIsPartnerSpeaking(true),
+                () => setIsPartnerSpeaking(false)
+              );
+              // Save audioData onto the initial message
+              setMessages((prev) =>
+                prev.map((m) => (m.id === 'msg-0' ? { ...m, audioData: data.audioData } : m))
+              );
+            } else {
+              setIsPartnerSpeaking(true);
+              speakText(
+                initialGreeting,
+                phase === 'phase1_target' ? partner.nativeLangCode : 'en',
+                () => setIsPartnerSpeaking(true),
+                () => setIsPartnerSpeaking(false)
+              );
+            }
+          })
+          .catch(() => {
+            setIsPartnerSpeaking(true);
+            speakText(
+              initialGreeting,
+              phase === 'phase1_target' ? partner.nativeLangCode : 'en',
+              () => setIsPartnerSpeaking(true),
+              () => setIsPartnerSpeaking(false)
+            );
+          });
       }, 500);
     }
   }, [partner]);
@@ -268,19 +303,28 @@ export const TandemRoom: React.FC<TandemRoomProps> = ({
         reaction: data.reaction,
         timestamp: Date.now(),
         language: phase === 'phase1_target' ? partner.nativeLangCode : 'en',
+        audioData: data.audioData,
       };
 
       setMessages((prev) => [...prev, partnerMessageObj]);
 
-      // Speak partner response in the appropriate language
+      // Speak partner response using Gemini AI Voice (or Web Speech API fallback)
       if (soundEnabled) {
         setIsPartnerSpeaking(true);
-        speakText(
-          data.replyText,
-          phase === 'phase1_target' ? partner.nativeLangCode : 'en',
-          () => setIsPartnerSpeaking(true),
-          () => setIsPartnerSpeaking(false)
-        );
+        if (data.audioData) {
+          playAiVoiceAudio(
+            data.audioData,
+            () => setIsPartnerSpeaking(true),
+            () => setIsPartnerSpeaking(false)
+          );
+        } else {
+          speakText(
+            data.replyText,
+            phase === 'phase1_target' ? partner.nativeLangCode : 'en',
+            () => setIsPartnerSpeaking(true),
+            () => setIsPartnerSpeaking(false)
+          );
+        }
       }
     } catch (err) {
       setIsPartnerTyping(false);
@@ -459,12 +503,18 @@ export const TandemRoom: React.FC<TandemRoomProps> = ({
                 <span className="text-xs font-extrabold text-slate-700">{partner.name}</span>
                 <span className="text-[11px] text-slate-400 font-medium">({partner.location})</span>
               </div>
-              {isPartnerSpeaking && (
-                <div className="flex items-center gap-1 text-[11px] font-black text-[#58cc02] bg-emerald-50 px-2 py-0.5 rounded-full">
-                  <Volume2 className="w-3.5 h-3.5 animate-pulse" />
-                  <span>Speaking...</span>
-                </div>
-              )}
+              <div className="flex items-center gap-1.5">
+                <span className="text-[10px] font-black uppercase tracking-wider text-purple-700 bg-purple-50 px-2 py-0.5 rounded-full border border-purple-200 flex items-center gap-1">
+                  <Sparkles className="w-3 h-3 text-purple-600" />
+                  <span>AI Voice: {partner.voiceName || 'Kore'}</span>
+                </span>
+                {isPartnerSpeaking && (
+                  <div className="flex items-center gap-1 text-[11px] font-black text-[#58cc02] bg-emerald-50 px-2 py-0.5 rounded-full">
+                    <Volume2 className="w-3.5 h-3.5 animate-pulse" />
+                    <span>Speaking...</span>
+                  </div>
+                )}
+              </div>
             </div>
 
             <div className="relative flex justify-center py-2">
@@ -754,13 +804,43 @@ export const TandemRoom: React.FC<TandemRoomProps> = ({
                     <button
                       onClick={() => {
                         sounds.playClick();
-                        speakText(msg.text, msg.language);
+                        if (msg.audioData) {
+                          playAiVoiceAudio(
+                            msg.audioData,
+                            () => setIsPartnerSpeaking(true),
+                            () => setIsPartnerSpeaking(false)
+                          );
+                        } else {
+                          // Fetch Gemini TTS on demand
+                          fetch('/api/tandem/tts', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                              text: msg.text,
+                              voiceName: partner.voiceName || 'Kore',
+                              partnerLocation: partner.location,
+                            }),
+                          })
+                            .then((res) => res.json())
+                            .then((data) => {
+                              if (data.audioData) {
+                                playAiVoiceAudio(
+                                  data.audioData,
+                                  () => setIsPartnerSpeaking(true),
+                                  () => setIsPartnerSpeaking(false)
+                                );
+                              } else {
+                                speakText(msg.text, msg.language);
+                              }
+                            })
+                            .catch(() => speakText(msg.text, msg.language));
+                        }
                       }}
-                      className="mt-1 text-[11px] font-bold text-slate-400 hover:text-slate-600 flex items-center gap-1 px-1 transition-colors cursor-pointer"
-                      title="Listen again"
+                      className="mt-1 text-[11px] font-bold text-slate-400 hover:text-purple-600 flex items-center gap-1.5 px-1 transition-colors cursor-pointer"
+                      title="Hear AI voice replay"
                     >
-                      <Volume2 className="w-3 h-3" />
-                      <span>Hear audio</span>
+                      <Volume2 className="w-3.5 h-3.5 text-purple-500" />
+                      <span>Hear AI Voice</span>
                     </button>
                   )}
                 </div>

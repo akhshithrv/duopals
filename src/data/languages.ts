@@ -94,6 +94,7 @@ export const ALL_PARTNERS: Partner[] = [
     accentNote: 'Peninsular Spanish (Spain)',
     streak: 42,
     onlineStatus: 'Active Now',
+    voiceName: 'Kore',
   },
   {
     id: 'mateo',
@@ -112,6 +113,7 @@ export const ALL_PARTNERS: Partner[] = [
     accentNote: 'Mexican Spanish (Central)',
     streak: 78,
     onlineStatus: 'Active Now',
+    voiceName: 'Puck',
   },
   {
     id: 'elena',
@@ -130,6 +132,7 @@ export const ALL_PARTNERS: Partner[] = [
     accentNote: 'Rioplatense Spanish (Argentina)',
     streak: 31,
     onlineStatus: 'Active Now',
+    voiceName: 'Kore',
   },
 
   // French
@@ -150,6 +153,7 @@ export const ALL_PARTNERS: Partner[] = [
     accentNote: 'Parisian French',
     streak: 64,
     onlineStatus: 'Active Now',
+    voiceName: 'Zephyr',
   },
   {
     id: 'lucas-fr',
@@ -168,6 +172,7 @@ export const ALL_PARTNERS: Partner[] = [
     accentNote: 'Standard French',
     streak: 53,
     onlineStatus: 'Active Now',
+    voiceName: 'Charon',
   },
 
   // Japanese
@@ -188,6 +193,7 @@ export const ALL_PARTNERS: Partner[] = [
     accentNote: 'Standard Tokyo Japanese (Kanto)',
     streak: 92,
     onlineStatus: 'Active Now',
+    voiceName: 'Fenrir',
   },
   {
     id: 'yuka',
@@ -206,6 +212,7 @@ export const ALL_PARTNERS: Partner[] = [
     accentNote: 'Kansai / Kyoto Japanese',
     streak: 37,
     onlineStatus: 'Active Now',
+    voiceName: 'Kore',
   },
 
   // German
@@ -226,6 +233,7 @@ export const ALL_PARTNERS: Partner[] = [
     accentNote: 'Standard German (Hochdeutsch)',
     streak: 85,
     onlineStatus: 'Active Now',
+    voiceName: 'Charon',
   },
 
   // Korean
@@ -246,6 +254,7 @@ export const ALL_PARTNERS: Partner[] = [
     accentNote: 'Seoul Standard Korean',
     streak: 49,
     onlineStatus: 'Active Now',
+    voiceName: 'Puck',
   },
 
   // Italian
@@ -266,6 +275,7 @@ export const ALL_PARTNERS: Partner[] = [
     accentNote: 'Central Italian (Rome)',
     streak: 58,
     onlineStatus: 'Active Now',
+    voiceName: 'Zephyr',
   },
 
   // Portuguese
@@ -286,6 +296,7 @@ export const ALL_PARTNERS: Partner[] = [
     accentNote: 'Carioca Portuguese (Brazil)',
     streak: 71,
     onlineStatus: 'Active Now',
+    voiceName: 'Fenrir',
   },
 
   // Mandarin
@@ -306,6 +317,7 @@ export const ALL_PARTNERS: Partner[] = [
     accentNote: 'Standard Mandarin (Putonghua)',
     streak: 63,
     onlineStatus: 'Active Now',
+    voiceName: 'Kore',
   },
 ];
 

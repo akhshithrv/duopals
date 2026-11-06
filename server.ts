@@ -27,7 +27,7 @@ const ai = apiKey
     })
   : null;
 
-// Multi-Language Tandem Partners Catalog
+// Multi-Language Tandem Partners Catalog with Prebuilt AI Voices
 const TANDEM_PARTNERS = [
   // Spanish
   {
@@ -47,6 +47,7 @@ const TANDEM_PARTNERS = [
     accentNote: 'Peninsular Spanish (Spain)',
     streak: 42,
     onlineStatus: 'Active Now',
+    voiceName: 'Kore',
   },
   {
     id: 'mateo',
@@ -65,6 +66,7 @@ const TANDEM_PARTNERS = [
     accentNote: 'Mexican Spanish (Central)',
     streak: 78,
     onlineStatus: 'Active Now',
+    voiceName: 'Puck',
   },
   {
     id: 'elena',
@@ -83,6 +85,7 @@ const TANDEM_PARTNERS = [
     accentNote: 'Rioplatense Spanish (Argentina)',
     streak: 31,
     onlineStatus: 'Active Now',
+    voiceName: 'Kore',
   },
 
   // French
@@ -103,6 +106,26 @@ const TANDEM_PARTNERS = [
     accentNote: 'Parisian French',
     streak: 64,
     onlineStatus: 'Active Now',
+    voiceName: 'Zephyr',
+  },
+  {
+    id: 'lucas-fr',
+    name: 'Lucas Moreau',
+    age: 28,
+    location: 'Lyon, France',
+    nativeLanguage: 'French 🇫🇷',
+    learningLanguage: 'English 🇺🇸',
+    nativeLangCode: 'fr',
+    learningLangCode: 'en',
+    proficiencyInUserLang: 'Upper-Intermediate (B2)',
+    avatarUrl: '/src/assets/images/partner_camille_1793929609896.jpg',
+    bio: 'Gastronomy tour guide and wine merchant. Eager to help English speakers discover French cuisine while refining my English tech terms.',
+    interests: ['Wine Tasting', 'Gastronomy', 'Kayaking', 'European History'],
+    speakingSpeed: 'Relaxed',
+    accentNote: 'Standard French',
+    streak: 53,
+    onlineStatus: 'Active Now',
+    voiceName: 'Charon',
   },
 
   // Japanese
@@ -123,6 +146,26 @@ const TANDEM_PARTNERS = [
     accentNote: 'Standard Tokyo Japanese (Kanto)',
     streak: 92,
     onlineStatus: 'Active Now',
+    voiceName: 'Fenrir',
+  },
+  {
+    id: 'yuka',
+    name: 'Yuka Tanaka',
+    age: 24,
+    location: 'Kyoto, Japan',
+    nativeLanguage: 'Japanese 🇯🇵',
+    learningLanguage: 'English 🇺🇸',
+    nativeLangCode: 'ja',
+    learningLangCode: 'en',
+    proficiencyInUserLang: 'Intermediate (B1)',
+    avatarUrl: '/src/assets/images/partner_kenji_1793929609889.jpg',
+    bio: 'Ceramics artisan and matcha cafe barista. Excited to teach practical polite Japanese and talk about travel and green tea in English!',
+    interests: ['Tea Ceremony', 'Pottery', 'Gardening', 'Photography'],
+    speakingSpeed: 'Gentle',
+    accentNote: 'Kansai / Kyoto Japanese',
+    streak: 37,
+    onlineStatus: 'Active Now',
+    voiceName: 'Kore',
   },
 
   // German
@@ -143,6 +186,7 @@ const TANDEM_PARTNERS = [
     accentNote: 'Standard German (Hochdeutsch)',
     streak: 85,
     onlineStatus: 'Active Now',
+    voiceName: 'Charon',
   },
 
   // Korean
@@ -163,6 +207,7 @@ const TANDEM_PARTNERS = [
     accentNote: 'Seoul Standard Korean',
     streak: 49,
     onlineStatus: 'Active Now',
+    voiceName: 'Puck',
   },
 
   // Italian
@@ -183,6 +228,7 @@ const TANDEM_PARTNERS = [
     accentNote: 'Central Italian (Rome)',
     streak: 58,
     onlineStatus: 'Active Now',
+    voiceName: 'Zephyr',
   },
 
   // Portuguese
@@ -203,6 +249,7 @@ const TANDEM_PARTNERS = [
     accentNote: 'Carioca Portuguese (Brazil)',
     streak: 71,
     onlineStatus: 'Active Now',
+    voiceName: 'Fenrir',
   },
 
   // Mandarin
@@ -223,6 +270,7 @@ const TANDEM_PARTNERS = [
     accentNote: 'Standard Mandarin (Putonghua)',
     streak: 63,
     onlineStatus: 'Active Now',
+    voiceName: 'Kore',
   },
 ];
 
@@ -251,6 +299,48 @@ const CONVERSATION_TOPICS = [
   },
 ];
 
+// Helper: Generate AI Voice Speech using gemini-3.8-flash-lite-tts
+async function generateAiVoice(
+  text: string,
+  voiceName: string = 'Kore',
+  styleContext: string = 'Friendly native conversational speaker'
+): Promise<string | null> {
+  if (!ai || !text) return null;
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.8-flash-lite-tts',
+      contents: [
+        {
+          role: 'user',
+          parts: [
+            {
+              text,
+              speechMetadata: {
+                style: styleContext,
+              },
+            },
+          ],
+        },
+      ],
+      config: {
+        responseModalities: ['AUDIO'],
+        speechConfig: {
+          voiceConfig: {
+            prebuiltVoiceConfig: { voiceName: voiceName || 'Kore' },
+          },
+        },
+      },
+    });
+
+    const base64Audio =
+      response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data || null;
+    return base64Audio;
+  } catch (err) {
+    console.warn('Gemini TTS generation error (will fallback to browser speech):', err);
+    return null;
+  }
+}
+
 // API: Get Partners
 app.get('/api/tandem/partners', (req, res) => {
   const lang = req.query.lang as string;
@@ -266,7 +356,7 @@ app.get('/api/tandem/topics', (_req, res) => {
   res.json({ topics: CONVERSATION_TOPICS });
 });
 
-// API: Tandem Chat Response (Multi-Language)
+// API: Tandem Chat Response (with Gemini AI Voice synthesis)
 app.post('/api/tandem/chat', async (req, res) => {
   try {
     const {
@@ -280,6 +370,12 @@ app.post('/api/tandem/chat', async (req, res) => {
 
     const partner = TANDEM_PARTNERS.find((p) => p.id === partnerId) || TANDEM_PARTNERS[0];
     const isTargetLanguageTurn = sessionPhase === 'phase1_target';
+
+    let replyText = '';
+    let translation = '';
+    let correction: string | null = null;
+    let reaction = '¡Genial!';
+    let followUpPrompt = '';
 
     if (ai) {
       const promptContext = `
@@ -333,86 +429,123 @@ Respond in JSON matching:
       if (response.text) {
         try {
           const parsed = JSON.parse(response.text);
-          return res.json(parsed);
+          replyText = parsed.replyText;
+          translation = parsed.translation;
+          correction = parsed.correction;
+          reaction = parsed.reaction;
+          followUpPrompt = parsed.followUpPrompt;
         } catch {
-          // fall through to localized fallback
+          // fall through
         }
       }
     }
 
-    // Localized fallbacks for all supported languages
-    const fallbacks: Record<string, { reply: string; trans: string; react: string; prompt: string }> = {
-      es: {
-        reply: `¡Qué bien lo dices! Me encanta este tema sobre "${topicTitle}". Aquí en ${partner.location.split(',')[0]} es muy común. ¿Qué opinas tú?`,
-        trans: `You said that so well! I love this topic about "${topicTitle}". Here in ${partner.location.split(',')[0]} it's very common. What do you think?`,
-        react: '¡Muy bien!',
-        prompt: '¿Cómo es tu rutina típica?',
-      },
-      fr: {
-        reply: `C'est très intéressant ! À ${partner.location.split(',')[0]}, nous adorons parler de "${topicTitle}". Votre prononciation est excellente !`,
-        trans: `That's very interesting! In ${partner.location.split(',')[0]}, we love talking about "${topicTitle}". Your pronunciation is excellent!`,
-        react: 'Très bien !',
-        prompt: 'Et vous, qu’en pensez-vous ?',
-      },
-      ja: {
-        reply: `とても上手ですね！${partner.location.split(',')[0]}でも「${topicTitle}」はとても人気です。発音もすごく自然ですよ！`,
-        trans: `You speak very well! In ${partner.location.split(',')[0]}, "${topicTitle}" is very popular. Your pronunciation is very natural too!`,
-        react: '素晴らしい！',
-        prompt: '普段はどうしていますか？',
-      },
-      de: {
-        reply: `Das hast du super gesagt! In ${partner.location.split(',')[0]} ist das Thema "${topicTitle}" auch sehr beliebt. Deine Aussprache ist echt klasse!`,
-        trans: `You said that wonderfully! In ${partner.location.split(',')[0]}, "${topicTitle}" is also very popular. Your pronunciation is really great!`,
-        react: 'Ausgezeichnet!',
-        prompt: 'Wie machst du das normalerweise?',
-      },
-      ko: {
-        reply: `정말 자연스럽게 말씀하시네요! ${partner.location.split(',')[0]}에서도 "${topicTitle}"에 대해 이야기하는 걸 다들 좋아해요. 발음이 정말 좋아요!`,
-        trans: `You speak so naturally! In ${partner.location.split(',')[0]}, everyone loves talking about "${topicTitle}". Your pronunciation is really great!`,
-        react: '대단해요!',
-        prompt: '평소에는 어떠세요?',
-      },
-      it: {
-        reply: `Che bello! Qui a ${partner.location.split(',')[0]} adoriamo parlare di "${topicTitle}". La tua pronuncia è davvero ottima!`,
-        trans: `How lovely! Here in ${partner.location.split(',')[0]} we adore talking about "${topicTitle}". Your pronunciation is really great!`,
-        react: 'Bravissimo!',
-        prompt: 'Tu cosa preferisci?',
-      },
-      pt: {
-        reply: `Que legal ouvir isso! Aqui em ${partner.location.split(',')[0]} todo mundo adora falar sobre "${topicTitle}". Seu sotaque está ótimo!`,
-        trans: `How cool to hear that! Here in ${partner.location.split(',')[0]} everyone loves talking about "${topicTitle}". Your accent is great!`,
-        react: 'Muito bom!',
-        prompt: 'Como você costuma fazer?',
-      },
-      zh: {
-        reply: `你说得真棒！在${partner.location.split(',')[0]}，大家也很喜欢聊"${topicTitle}"。你的发音听起来很舒服！`,
-        trans: `You said that wonderfully! In ${partner.location.split(',')[0]}, people also love chatting about "${topicTitle}". Your pronunciation sounds very comfortable!`,
-        react: '太棒了！',
-        prompt: '你平时习惯怎么做呢？',
-      },
-    };
+    // Localized fallbacks if AI text generation didn't populate
+    if (!replyText) {
+      const fallbacks: Record<string, { reply: string; trans: string; react: string; prompt: string }> = {
+        es: {
+          reply: `¡Qué bien lo dices! Me encanta este tema sobre "${topicTitle}". Aquí en ${partner.location.split(',')[0]} es muy común. ¿Qué opinas tú?`,
+          trans: `You said that so well! I love this topic about "${topicTitle}". Here in ${partner.location.split(',')[0]} it's very common. What do you think?`,
+          react: '¡Muy bien!',
+          prompt: '¿Cómo es tu rutina típica?',
+        },
+        fr: {
+          reply: `C'est très intéressant ! À ${partner.location.split(',')[0]}, nous adorons parler de "${topicTitle}". Votre prononciation est excellente !`,
+          trans: `That's very interesting! In ${partner.location.split(',')[0]}, we love talking about "${topicTitle}". Your pronunciation is excellent!`,
+          react: 'Très bien !',
+          prompt: 'Et vous, qu’en pensez-vous ?',
+        },
+        ja: {
+          reply: `とても上手ですね！${partner.location.split(',')[0]}でも「${topicTitle}」はとても人気です。発音もすごく自然ですよ！`,
+          trans: `You speak very well! In ${partner.location.split(',')[0]}, "${topicTitle}" is very popular. Your pronunciation is very natural too!`,
+          react: '素晴らしい！',
+          prompt: '普段はどうしていますか？',
+        },
+        de: {
+          reply: `Das hast du super gesagt! In ${partner.location.split(',')[0]} ist das Thema "${topicTitle}" auch sehr beliebt. Deine Aussprache ist echt klasse!`,
+          trans: `You said that wonderfully! In ${partner.location.split(',')[0]}, "${topicTitle}" is also very popular. Your pronunciation is really great!`,
+          react: 'Ausgezeichnet!',
+          prompt: 'Wie machst du das normalerweise?',
+        },
+        ko: {
+          reply: `정말 자연스럽게 말씀하시네요! ${partner.location.split(',')[0]}에서도 "${topicTitle}"에 대해 이야기하는 걸 다들 좋아해요. 발음이 정말 좋아요!`,
+          trans: `You speak so naturally! In ${partner.location.split(',')[0]}, everyone loves talking about "${topicTitle}". Your pronunciation is really great!`,
+          react: '대단해요!',
+          prompt: '평소에는 어떠세요?',
+        },
+        it: {
+          reply: `Che bello! Qui a ${partner.location.split(',')[0]} adoriamo parlare di "${topicTitle}". La tua pronuncia è davvero ottima!`,
+          trans: `How lovely! Here in ${partner.location.split(',')[0]} we adore talking about "${topicTitle}". Your pronunciation is really great!`,
+          react: 'Bravissimo!',
+          prompt: 'Tu cosa preferisci?',
+        },
+        pt: {
+          reply: `Que legal ouvir isso! Aqui em ${partner.location.split(',')[0]} todo mundo adora falar sobre "${topicTitle}". Seu sotaque está ótimo!`,
+          trans: `How cool to hear that! Here in ${partner.location.split(',')[0]} everyone loves talking about "${topicTitle}". Your accent is great!`,
+          react: 'Muito bom!',
+          prompt: 'Como você costuma fazer?',
+        },
+        zh: {
+          reply: `你说得真棒！在${partner.location.split(',')[0]}，大家也很喜欢聊"${topicTitle}"。你的发音听起来很舒服！`,
+          trans: `You said that wonderfully! In ${partner.location.split(',')[0]}, people also love chatting about "${topicTitle}". Your pronunciation sounds very comfortable!`,
+          react: '太棒了！',
+          prompt: '你平时习惯怎么做呢？',
+        },
+      };
 
-    if (!isTargetLanguageTurn) {
-      // English phase fallback
-      return res.json({
-        reply: `I really enjoy this conversation! In ${partner.location.split(',')[0]}, we have a similar tradition. Could you teach me: what is the most natural way to say "it feels like home" in English?`,
-        translation: `¡Disfruto mucho esta conversación! En ${partner.location.split(',')[0]} tenemos una tradición similar. ¿Podrías enseñarme cuál es la forma más natural de decir "se siente como en casa" en inglés?`,
-        reaction: 'So interesting!',
-        followUpPrompt: 'Is it common where you live?',
-      });
+      if (!isTargetLanguageTurn) {
+        replyText = `I really enjoy this conversation! In ${partner.location.split(',')[0]}, we have a similar tradition. Could you teach me: what is the most natural way to say "it feels like home" in English?`;
+        translation = `¡Disfruto mucho esta conversación! En ${partner.location.split(',')[0]} tenemos una tradición similar. ¿Podrías enseñarme cuál es la forma más natural de decir "se siente como en casa" en inglés?`;
+        reaction = 'So interesting!';
+        followUpPrompt = 'Is it common where you live?';
+      } else {
+        const fallbackMatch = fallbacks[currentLanguage] || fallbacks.es;
+        replyText = fallbackMatch.reply;
+        translation = fallbackMatch.trans;
+        reaction = fallbackMatch.react;
+        followUpPrompt = fallbackMatch.prompt;
+      }
     }
 
-    const fallbackMatch = fallbacks[currentLanguage] || fallbacks.es;
+    // Generate real AI voice speech for the reply
+    const audioData = await generateAiVoice(
+      replyText,
+      partner.voiceName || 'Kore',
+      `Natural friendly conversational tone from ${partner.location}`
+    );
+
     return res.json({
-      replyText: fallbackMatch.reply,
-      translation: fallbackMatch.trans,
-      correction: null,
-      reaction: fallbackMatch.react,
-      followUpPrompt: fallbackMatch.prompt,
+      replyText,
+      translation,
+      correction,
+      reaction,
+      followUpPrompt,
+      audioData, // Base64 audio/wav generated by Gemini 3.8 Flash Lite TTS
     });
   } catch (err: unknown) {
     console.error('Tandem chat error:', err);
     return res.status(500).json({ error: 'Chat failed' });
+  }
+});
+
+// API: On-demand Text-to-Speech endpoint (for greetings, listen again, vocab cards)
+app.post('/api/tandem/tts', async (req, res) => {
+  try {
+    const { text, voiceName = 'Kore', partnerLocation = 'Europe' } = req.body;
+    if (!text) {
+      return res.status(400).json({ error: 'Text is required' });
+    }
+
+    const audioData = await generateAiVoice(
+      text,
+      voiceName,
+      `Conversational native speaker from ${partnerLocation}`
+    );
+
+    return res.json({ audioData });
+  } catch (err: unknown) {
+    console.error('TTS endpoint error:', err);
+    return res.status(500).json({ error: 'TTS failed' });
   }
 });
 

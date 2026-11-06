@@ -25,6 +25,7 @@ export interface Partner {
   accentNote: string;
   streak: number;
   onlineStatus: string;
+  voiceName: string;
 }
 
 export interface SuggestedVocab {
@@ -60,6 +61,7 @@ export interface Message {
   reaction?: string;
   timestamp: number;
   language: string;
+  audioData?: string; // Base64 WAV data from Gemini AI Voice
 }
 
 export type SessionPhase = 'phase1_target' | 'halfway_switch' | 'phase2_native' | 'summary';
